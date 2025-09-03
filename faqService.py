@@ -1,28 +1,22 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from fastapi import FastAPI, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_chroma import Chroma
 from langchain.memory import ConversationBufferMemory
-from langchain.chains import LLMChain
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainExtractor
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables import RunnableLambda
 import uuid
 import asyncio
 from typing import AsyncGenerator
 import os
-import cx_Oracle
+import oracledb
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -32,16 +26,19 @@ host = os.getenv("ORACLE_HOST")
 port = os.getenv("ORACLE_PORT")
 sid = os.getenv("ORACLE_SID")
 
+dsn = f"{host}:{port}/{sid}"
+    
 def load_documents():
-    dsn = cx_Oracle.makedsn(host, port, sid)
-    conn = cx_Oracle.connect(user=user, password=password, dsn=dsn)
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT QUESTION, ANSWER FROM CHATBOT_SCRIPT")
-
+    cursor.execute("SELECT question, answer, link_url FROM CHATBOT_SCRIPT")
     rows = cursor.fetchall()
-    documents = [Document(page_content=row[0]) for row in rows]
-
+    documents = []
+    for question, answer, link_url in rows:
+        content = f"Question:{question}Answer:{answer}Link:{link_url}"
+        documents.append(Document(page_content=content))
+    
     cursor.close()
     conn.close()
     return documents
@@ -60,7 +57,6 @@ vectorstore = Chroma.from_documents(
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
 memory = ConversationBufferMemory(return_messages=True)
-# 영구저장은 db에 직접 해야함
 
 prompt = ChatPromptTemplate.from_messages(
     [("system", """You are an assistant for question-answering tasks.
@@ -74,11 +70,50 @@ Answer in Korean."""),
 llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 store = {}
-# user_no별로 대화기록 가져오기
-def get_history(user_no:str):
-    if(user_no not in store):
+def get_history_from_db(user_no):
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT role, content FROM CHATBOT WHERE user_no=:1 ORDER BY created_at",
+        (user_no,)
+    )
+    if user_no not in store:
         store[user_no] = ChatMessageHistory()
-    return store[user_no]
+    
+    rows = cursor.fetchall()
+    for role, content in rows:
+        if role == "USER":
+            store[user_no].add_user_message(content)
+        else:
+            store[user_no].add_ai_message(content)
+    cursor.close()
+    conn.close()
+
+def get_history(params) -> ChatMessageHistory:
+    if isinstance(params, dict):
+        session_id = params["session_id"]
+        user_no = params["user_no"]
+        if user_no: get_history_from_db(user_no)
+        
+    else:
+        session_id = params
+        if isinstance(session_id, int): get_history_from_db(session_id)
+    
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    
+    return store[session_id]
+
+def set_history(user_no:str, role:str, content:str):
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
+    cursor = conn.cursor()
+    
+    cursor.execute("INSERT INTO CHATBOT (chatbot_no, user_no, role, content)" +
+                   "VALUES (SEQ_CHATBOT_NO.NEXTVAL, :1, :2, :3)",
+                  (user_no, role, content))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 query_extractor = RunnableLambda(lambda x : x["query"])
 
@@ -107,23 +142,37 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(request:Request, response:Response, chat_request: ChatRequest):
     user_no = request.cookies.get("user_no")
+    user_no = 1
     if user_no is None:
-        user_no = str(uuid.uuid4()) # 로그인하지 않은 사용자에게 랜덤 session id 부여
-        response.set_cookie(key="user_no", value=user_no, httponly=True)
+        session_id = str(uuid.uuid4())
+        response.set_cookie(key="session_id", value=session_id, httponly=True)
+    else:
+        session_id = user_no
 
     try:
         retrieved_docs = retriever.invoke(chat_request.question)
+        
+        if user_no:
+            set_history(user_no, "USER", chat_request.question)
+        params = {"session_id": session_id, "user_no": user_no}
+        get_history(params).add_user_message(chat_request.question)
 
         async def response_generator() -> AsyncGenerator[str, None]:
+            assistant_response = ""
             for chunk in chain_with_history.stream(
                 input={
                     "query":chat_request.question,
-                    "retrieved_docs":retrieved_docs
+                    "retrieved_docs":retrieved_docs,
                 },
-                config={"configurable":{"session_id":user_no}},
+                config={"configurable":params},
             ):
+                assistant_response += chunk
                 yield chunk
                 await asyncio.sleep(0)
+                
+            if user_no:
+                set_history(user_no, "BOT", assistant_response)
+            get_history(params).add_ai_message(assistant_response)
 
         return StreamingResponse(response_generator(), media_type="text/plain")
 
