@@ -64,7 +64,20 @@ Use the following retrieved context to answer the question.
 If you don't know the answer, just say you don't know.
 Answer in Korean."""),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", """#Question:\n{query}\n#Retrieved_docs:\n{retrieved_docs}\n#Answer:""")]
+    ("human", """Answer the following question.
+Question: {query}
+Retrieved documents: {retrieved_docs}
+
+**Rules:**
+1. Always respond in JSON format.
+2. JSON structure:
+{{
+    "answer": "The content of the answer",
+    "button": {{"url": "Link if available"}}  // if no link, set button to null
+}}
+3. Do not include any text outside of the JSON.
+"""
+)]
 )
 
 llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
@@ -77,17 +90,20 @@ def get_history_from_db(user_no):
         "SELECT role, content FROM CHATBOT WHERE user_no=:1 ORDER BY created_at",
         (user_no,)
     )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
     if user_no not in store:
         store[user_no] = ChatMessageHistory()
     
-    rows = cursor.fetchall()
     for role, content in rows:
         if role == "USER":
             store[user_no].add_user_message(content)
         else:
             store[user_no].add_ai_message(content)
-    cursor.close()
-    conn.close()
+    
+    return store[user_no]
 
 def get_history(params) -> ChatMessageHistory:
     if isinstance(params, dict):
@@ -133,7 +149,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -142,11 +158,13 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(request:Request, response:Response, chat_request: ChatRequest):
     user_no = request.cookies.get("user_no")
-    user_no = 1
-    if user_no is None:
+    session_id = request.cookies.get("session_id")
+    # user_no = 1
+
+    if user_no is None and session_id is None:
         session_id = str(uuid.uuid4())
-        response.set_cookie(key="session_id", value=session_id, httponly=True)
-    else:
+
+    elif user_no is not None:
         session_id = user_no
 
     try:
@@ -174,7 +192,15 @@ async def chat(request:Request, response:Response, chat_request: ChatRequest):
                 set_history(user_no, "BOT", assistant_response)
             get_history(params).add_ai_message(assistant_response)
 
-        return StreamingResponse(response_generator(), media_type="text/plain")
+        streaming = StreamingResponse(response_generator(), media_type="application/json")
+        streaming.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            samesite="lax",
+            secure=False
+        )
+        return streaming
 
     except Exception as e:
         print("error occured", str(e))
