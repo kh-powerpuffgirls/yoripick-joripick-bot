@@ -156,7 +156,7 @@ app.add_middleware(
 )
 
 @app.post("/chat")
-async def chat(request:Request, response:Response, chat_request: ChatRequest):
+async def chat(request:Request, chat_request: ChatRequest):
     user_no = request.cookies.get("user_no")
     session_id = request.cookies.get("session_id")
     # user_no = 1
@@ -205,5 +205,17 @@ async def chat(request:Request, response:Response, chat_request: ChatRequest):
     except Exception as e:
         print("error occured", str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/chat")
+async def chat(request:Request):
+    user_no = request.cookies.get("user_no")
+    session_id = request.cookies.get("session_id")
     
+    if user_no in store:
+        del store[user_no]
+    if session_id in store:
+        del store[session_id]
+
+    return {"message": "Chat session deleted successfully"}
+
 # uvicorn faqService:app --host 0.0.0.0 --port 8080 --reload
