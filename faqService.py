@@ -3,7 +3,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ port = os.getenv("ORACLE_PORT")
 sid = os.getenv("ORACLE_SID")
 
 dsn = f"{host}:{port}/{sid}"
-    
+
 def load_documents():
     conn = oracledb.connect(user=user, password=password, dsn=dsn)
     cursor = conn.cursor()
@@ -120,17 +120,6 @@ def get_history(params) -> ChatMessageHistory:
     
     return store[session_id]
 
-def set_history(user_no:str, role:str, content:str):
-    conn = oracledb.connect(user=user, password=password, dsn=dsn)
-    cursor = conn.cursor()
-    
-    cursor.execute("INSERT INTO CHATBOT (chatbot_no, user_no, role, content)" +
-                   "VALUES (SEQ_CHATBOT_NO.NEXTVAL, :1, :2, :3)",
-                  (user_no, role, content))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
 query_extractor = RunnableLambda(lambda x : x["query"])
 
 chain = prompt | llm | StrOutputParser()
@@ -155,23 +144,19 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-@app.post("/chat")
-async def chat(request:Request, chat_request: ChatRequest):
-    user_no = request.cookies.get("user_no")
-    session_id = request.cookies.get("session_id")
-    # user_no = 1
-
-    if user_no is None and session_id is None:
-        session_id = str(uuid.uuid4())
-
-    elif user_no is not None:
+@app.post("/chat/{user_no}")
+async def chat(user_no: str, request:Request, chat_request: ChatRequest):
+    try:
+        user_no = int(user_no)
         session_id = user_no
+    except ValueError:
+        user_no = None
+        session_id = request.cookies.get("session_id")
+        if session_id is None:
+            session_id = str(uuid.uuid4())
 
     try:
         retrieved_docs = retriever.invoke(chat_request.question)
-        
-        if user_no:
-            set_history(user_no, "USER", chat_request.question)
         params = {"session_id": session_id, "user_no": user_no}
         get_history(params).add_user_message(chat_request.question)
 
@@ -187,9 +172,6 @@ async def chat(request:Request, chat_request: ChatRequest):
                 assistant_response += chunk
                 yield chunk
                 await asyncio.sleep(0)
-                
-            if user_no:
-                set_history(user_no, "BOT", assistant_response)
             get_history(params).add_ai_message(assistant_response)
 
         streaming = StreamingResponse(response_generator(), media_type="application/json")
@@ -207,13 +189,16 @@ async def chat(request:Request, chat_request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/chat/{user_no}")
-async def chat(user_no: int, request:Request):
-    session_id = request.cookies.get("session_id")
-    
-    if user_no in store:
-        del store[user_no]
-    if session_id in store:
-        del store[session_id]
+async def chat(user_no: str, request:Request):
+    try:
+        user_no = int(user_no)
+        if user_no in store:
+            del store[user_no]
+    except ValueError:
+        user_no = None
+        session_id = request.cookies.get("session_id")
+        if session_id in store:
+            del store[session_id]
 
     return {"message": "Chat session deleted successfully"}
 
