@@ -72,8 +72,8 @@ Retrieved documents: {retrieved_docs}
 1. Always respond in JSON format.
 2. JSON structure:
 {{
-    "answer": "The content of the answer",
-    "button": {{"url": "Link if available"}}  // if no link, set button to null
+    "content": "The content of the answer",
+    "button": {{"linkUrl": "Link if available"}}  // if no link, set button to null
 }}
 3. Do not include any text outside of the JSON.
 """
