@@ -206,9 +206,8 @@ async def chat(request:Request, chat_request: ChatRequest):
         print("error occured", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/chat")
-async def chat(request:Request):
-    user_no = request.cookies.get("user_no")
+@app.delete("/chat/{user_no}")
+async def chat(user_no: int, request:Request):
     session_id = request.cookies.get("session_id")
     
     if user_no in store:
