@@ -147,8 +147,8 @@ app.add_middleware(
 @app.post("/chat/{user_no}")
 async def chat(user_no: str, request:Request, chat_request: ChatRequest):
     try:
-        user_no = int(user_no)
         session_id = user_no
+        user_no = int(user_no)
     except ValueError:
         user_no = None
         session_id = request.cookies.get("session_id")
@@ -191,7 +191,6 @@ async def chat(user_no: str, request:Request, chat_request: ChatRequest):
 @app.delete("/chat/{user_no}")
 async def chat(user_no: str, request:Request):
     try:
-        user_no = int(user_no)
         if user_no in store:
             del store[user_no]
     except ValueError:
