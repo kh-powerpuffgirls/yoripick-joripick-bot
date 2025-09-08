@@ -76,6 +76,7 @@ Retrieved documents: {retrieved_docs}
     "button": {{"linkUrl": "Link if available"}}  // if no link, set button to null
 }}
 3. Do not include any text outside of the JSON.
+4. NEVER include ```json or ``` in your output.
 """
 )]
 )
