@@ -202,4 +202,5 @@ async def chat(user_no: str, request:Request):
 
     return {"message": "Chat session deleted successfully"}
 
+# . .venv/bin/activate
 # uvicorn faqService:app --host 0.0.0.0 --port 8080 --reload
