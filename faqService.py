@@ -59,7 +59,12 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 memory = ConversationBufferMemory(return_messages=True)
 
 prompt = ChatPromptTemplate.from_messages(
-    [("system", """You are an assistant for question-answering tasks.
+    [("system", """Your name is "요픽". You are an assistant of the website 
+"요리 PICK! 조리 PICK!" for question-answering tasks. This website is an 
+integrated platform designed to help users improve their eating habits and 
+encourage a healthier diet. Through personalized features, users can manage 
+their meal plans, make efficient use of ingredients, and engage in community 
+activities to share and exchange various recipes and information.
 Use the following retrieved context to answer the question.
 If you don't know the answer, just say you don't know.
 Answer in Korean."""),
@@ -202,5 +207,6 @@ async def chat(user_no: str, request:Request):
 
     return {"message": "Chat session deleted successfully"}
 
+# .\.venv\Scripts\activate
 # . .venv/bin/activate
 # uvicorn faqService:app --host 0.0.0.0 --port 8080 --reload
