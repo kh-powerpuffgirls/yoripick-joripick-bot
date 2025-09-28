@@ -1,28 +1,22 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from fastapi import FastAPI, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_chroma import Chroma
 from langchain.memory import ConversationBufferMemory
-from langchain.chains import LLMChain
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainExtractor
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables import RunnableLambda
 import uuid
 import asyncio
 from typing import AsyncGenerator
 import os
-import cx_Oracle
+import oracledb
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -32,16 +26,19 @@ host = os.getenv("ORACLE_HOST")
 port = os.getenv("ORACLE_PORT")
 sid = os.getenv("ORACLE_SID")
 
+dsn = f"{host}:{port}/{sid}"
+
 def load_documents():
-    dsn = cx_Oracle.makedsn(host, port, sid)
-    conn = cx_Oracle.connect(user=user, password=password, dsn=dsn)
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT QUESTION, ANSWER FROM CHATBOT_SCRIPT")
-
+    cursor.execute("SELECT question, answer, link_url FROM CHATBOT_SCRIPT")
     rows = cursor.fetchall()
-    documents = [Document(page_content=row[0]) for row in rows]
-
+    documents = []
+    for question, answer, link_url in rows:
+        content = f"Question:{question}Answer:{answer}Link:{link_url}"
+        documents.append(Document(page_content=content))
+    
     cursor.close()
     conn.close()
     return documents
@@ -60,25 +57,74 @@ vectorstore = Chroma.from_documents(
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
 memory = ConversationBufferMemory(return_messages=True)
-# 영구저장은 db에 직접 해야함
 
 prompt = ChatPromptTemplate.from_messages(
-    [("system", """You are an assistant for question-answering tasks.
+    [("system", """Your name is "요픽". You are an assistant of the website 
+"요리 PICK! 조리 PICK!" for question-answering tasks. This website is an 
+integrated platform designed to help users improve their eating habits and 
+encourage a healthier diet. Through personalized features, users can manage 
+their meal plans, make efficient use of ingredients, and engage in community 
+activities to share and exchange various recipes and information.
 Use the following retrieved context to answer the question.
 If you don't know the answer, just say you don't know.
 Answer in Korean."""),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", """#Question:\n{query}\n#Retrieved_docs:\n{retrieved_docs}\n#Answer:""")]
+    ("human", """Answer the following question.
+Question: {query}
+Retrieved documents: {retrieved_docs}
+
+**Rules:**
+1. Always respond in JSON format.
+2. JSON structure:
+{{
+    "content": "The content of the answer",
+    "button": {{"linkUrl": "Link if available"}}  // if no link, set button to null
+}}
+3. Do not include any text outside of the JSON.
+4. NEVER include ```json or ``` in your output.
+"""
+)]
 )
 
 llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 store = {}
-# user_no별로 대화기록 가져오기
-def get_history(user_no:str):
-    if(user_no not in store):
+def get_history_from_db(user_no):
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT role, content FROM CHATBOT WHERE user_no=:1 ORDER BY created_at",
+        (user_no,)
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    if user_no not in store:
         store[user_no] = ChatMessageHistory()
+    
+    for role, content in rows:
+        if role == "USER":
+            store[user_no].add_user_message(content)
+        else:
+            store[user_no].add_ai_message(content)
+    
     return store[user_no]
+
+def get_history(params) -> ChatMessageHistory:
+    if isinstance(params, dict):
+        session_id = params["session_id"]
+        user_no = params["user_no"]
+        if user_no: get_history_from_db(user_no)
+        
+    else:
+        session_id = params
+        if isinstance(session_id, int): get_history_from_db(session_id)
+    
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    
+    return store[session_id]
 
 query_extractor = RunnableLambda(lambda x : x["query"])
 
@@ -98,37 +144,69 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
 
-@app.post("/chat")
-async def chat(request:Request, response:Response, chat_request: ChatRequest):
-    user_no = request.cookies.get("user_no")
-    if user_no is None:
-        user_no = str(uuid.uuid4()) # 로그인하지 않은 사용자에게 랜덤 session id 부여
-        response.set_cookie(key="user_no", value=user_no, httponly=True)
+@app.post("/chat/{user_no}")
+async def chat(user_no: str, request:Request, chat_request: ChatRequest):
+    try:
+        session_id = user_no
+        user_no = int(user_no)
+    except ValueError:
+        user_no = None
+        session_id = request.cookies.get("session_id")
+        if session_id is None:
+            session_id = str(uuid.uuid4())
 
     try:
         retrieved_docs = retriever.invoke(chat_request.question)
+        params = {"session_id": session_id, "user_no": user_no}
+        get_history(params).add_user_message(chat_request.question)
 
         async def response_generator() -> AsyncGenerator[str, None]:
+            assistant_response = ""
             for chunk in chain_with_history.stream(
                 input={
                     "query":chat_request.question,
-                    "retrieved_docs":retrieved_docs
+                    "retrieved_docs":retrieved_docs,
                 },
-                config={"configurable":{"session_id":user_no}},
+                config={"configurable":params},
             ):
+                assistant_response += chunk
                 yield chunk
                 await asyncio.sleep(0)
+            get_history(params).add_ai_message(assistant_response)
 
-        return StreamingResponse(response_generator(), media_type="text/plain")
+        streaming = StreamingResponse(response_generator(), media_type="application/json")
+        streaming.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            samesite="lax",
+            secure=False
+        )
+        return streaming
 
     except Exception as e:
         print("error occured", str(e))
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+@app.delete("/chat/{user_no}")
+async def chat(user_no: str, request:Request):
+    try:
+        if user_no in store:
+            del store[user_no]
+    except ValueError:
+        user_no = None
+        session_id = request.cookies.get("session_id")
+        if session_id in store:
+            del store[session_id]
+
+    return {"message": "Chat session deleted successfully"}
+
+# .\.venv\Scripts\activate
+# . .venv/bin/activate
 # uvicorn faqService:app --host 0.0.0.0 --port 8080 --reload
