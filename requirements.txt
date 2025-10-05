@@ -9,3 +9,4 @@ langchain-chroma
 chromadb
 langchain_openai
 openai
+langchain-community
