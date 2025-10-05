@@ -4,6 +4,8 @@ pydantic
 python-dotenv
 oracledb
 langchain
+langchain-text-splitters
+langchain-chroma
 chromadb
 langchain_openai
 openai
