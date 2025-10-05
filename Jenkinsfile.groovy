@@ -44,7 +44,8 @@ pipeline {
                         -d \
                         -p 8000:8000 \
                         --name=ypjp-bot \
-                        -v /etc/letsencrypt/live/bot.ypjp.store:/app/certs:ro \
+                        -v /etc/letsencrypt/archive/bot.ypjp.store/fullchain1.pem:/app/certs/fullchain.pem:ro \
+                        -v /etc/letsencrypt/archive/bot.ypjp.store/privkey1.pem:/app/certs/privkey.pem:ro \
                         ${strDockerImage} \
                         uvicorn faqService:app --host 0.0.0.0 --port 8000 \
                         --ssl-certfile /app/certs/fullchain.pem \
