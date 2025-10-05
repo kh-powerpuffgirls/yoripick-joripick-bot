@@ -5,3 +5,5 @@ python-dotenv
 oracledb
 langchain
 chromadb
+langchain_openai
+openai
