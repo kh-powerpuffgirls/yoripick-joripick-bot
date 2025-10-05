@@ -11,7 +11,7 @@ pipeline {
         // 1. 깃헙 체크아웃(master)
         stage('Checkout') {
             steps {
-                git branch: 'main', url: strGitUrl
+                git branch: 'jenkins', url: strGitUrl
             }
         }
         // 2. 도커 이미지 빌드
