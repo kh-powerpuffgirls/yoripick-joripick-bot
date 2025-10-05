@@ -3,7 +3,7 @@ uvicorn
 pydantic
 python-dotenv
 oracledb
-langchain
+langchain==0.1.0
 chromadb
 langchain_openai
 openai
